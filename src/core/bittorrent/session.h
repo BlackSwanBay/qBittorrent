@@ -61,6 +61,7 @@ namespace libtorrent
     struct torrent_finished_alert;
     struct torrent_removed_alert;
     struct torrent_deleted_alert;
+    struct torrent_delete_failed_alert;
     struct torrent_paused_alert;
     struct torrent_resumed_alert;
     struct save_resume_data_alert;
@@ -126,15 +127,14 @@ namespace BitTorrent
 
     struct TorrentStatusReport
     {
-        uint nbDownloading;
-        uint nbSeeding;
-        uint nbCompleted;
-        uint nbActive;
-        uint nbInactive;
-        uint nbPaused;
-        uint nbResumed;
-
-        TorrentStatusReport();
+        uint nbDownloading = 0;
+        uint nbSeeding = 0;
+        uint nbCompleted = 0;
+        uint nbActive = 0;
+        uint nbInactive = 0;
+        uint nbPaused = 0;
+        uint nbResumed = 0;
+        uint nbErrored = 0;
     };
 
     class Session : public QObject
@@ -160,6 +160,7 @@ namespace BitTorrent
 
         TorrentHandle *findTorrent(const InfoHash &hash) const;
         QHash<InfoHash, TorrentHandle *> torrents() const;
+        TorrentStatusReport torrentStatusReport() const;
         bool hasActiveTorrents() const;
         bool hasUnfinishedTorrents() const;
         SessionStatus status() const;
@@ -213,11 +214,10 @@ namespace BitTorrent
         void handleTorrentTrackerAuthenticationRequired(TorrentHandle *const torrent, const QString &trackerUrl);
 
     signals:
-        void torrentsUpdated(const BitTorrent::TorrentStatusReport &torrentStatusReport = BitTorrent::TorrentStatusReport());
+        void torrentsUpdated();
         void addTorrentFailed(const QString &error);
         void torrentAdded(BitTorrent::TorrentHandle *const torrent);
         void torrentAboutToBeRemoved(BitTorrent::TorrentHandle *const torrent);
-        void torrentStatusUpdated(BitTorrent::TorrentHandle *const torrent);
         void torrentPaused(BitTorrent::TorrentHandle *const torrent);
         void torrentResumed(BitTorrent::TorrentHandle *const torrent);
         void torrentFinished(BitTorrent::TorrentHandle *const torrent);
@@ -266,14 +266,13 @@ namespace BitTorrent
         bool hasPerTorrentRatioLimit() const;
 
         void initResumeFolder();
-        void loadState();
-        void saveState();
 
         // Session configuration
         void setSessionSettings();
         void setProxySettings(libtorrent::proxy_settings proxySettings);
         void adjustLimits();
         void adjustLimits(libtorrent::session_settings &sessionSettings);
+        const QStringList getListeningIPs();
         void setListeningPort();
         void setDefaultSavePath(const QString &path);
         void setDefaultTempPath(const QString &path = QString());
@@ -288,7 +287,7 @@ namespace BitTorrent
         void setAppendExtension(bool append);
 
         void startUpTorrents();
-        bool addTorrent_impl(const AddTorrentData &addData, const MagnetUri &magnetUri,
+        bool addTorrent_impl(AddTorrentData addData, const MagnetUri &magnetUri,
                              const TorrentInfo &torrentInfo = TorrentInfo(),
                              const QByteArray &fastresumeData = QByteArray());
 
@@ -305,6 +304,7 @@ namespace BitTorrent
         void handleFileErrorAlert(libtorrent::file_error_alert *p);
         void handleTorrentRemovedAlert(libtorrent::torrent_removed_alert *p);
         void handleTorrentDeletedAlert(libtorrent::torrent_deleted_alert *p);
+        void handleTorrentDeleteFailedAlert(libtorrent::torrent_delete_failed_alert *p);
         void handlePortmapWarningAlert(libtorrent::portmap_error_alert *p);
         void handlePortmapAlert(libtorrent::portmap_alert *p);
         void handlePeerBlockedAlert(libtorrent::peer_blocked_alert *p);
@@ -319,6 +319,8 @@ namespace BitTorrent
 
         void dispatchAlerts(std::auto_ptr<libtorrent::alert> alertPtr);
         void getPendingAlerts(QVector<libtorrent::alert *> &out, ulong time = 0);
+
+        AddTorrentData addDataFromParams(const AddTorrentParams &params);
 
         // BitTorrent
         libtorrent::session *m_nativeSession;
@@ -337,6 +339,7 @@ namespace BitTorrent
         bool m_appendExtension;
         uint m_refreshInterval;
         MaxRatioAction m_highRatioAction;
+        QList<BitTorrent::TrackerEntry> m_additionalTrackers;
         QString m_defaultSavePath;
         QString m_tempPath;
         QString m_filterPath;
@@ -358,6 +361,7 @@ namespace BitTorrent
         QHash<InfoHash, TorrentHandle *> m_torrents;
         QHash<InfoHash, AddTorrentData> m_addingTorrents;
         QHash<QString, AddTorrentParams> m_downloadedTorrents;
+        TorrentStatusReport m_torrentStatusReport;
 
         QMutex m_alertsMutex;
         QWaitCondition m_alertsWaitCondition;

@@ -504,7 +504,17 @@ QList<bool> Preferences::getDownloadInScanDirs() const
 
 void Preferences::setDownloadInScanDirs(const QList<bool> &list)
 {
-    setValue("Preferences/Downloads/DownloadInScanDirs", Utils::Misc::toStringList(list));
+    setValue("Preferences/Downloads/ScanDirsDownloadPaths", Utils::Misc::toStringList(list));
+}
+
+void Preferences::setScanDirsDownloadPaths(const QStringList &downloadpaths)
+{
+    setValue("Preferences/Downloads/ScanDirsDownloadPaths", downloadpaths);
+}
+
+QStringList Preferences::getScanDirsDownloadPaths() const
+{
+    return value("Preferences/Downloads/DownloadPaths").toStringList();
 }
 
 QString Preferences::getScanDirsLastPath() const
@@ -964,6 +974,26 @@ void Preferences::setEncryptionSetting(int val)
     setValue("Preferences/Bittorrent/Encryption", val);
 }
 
+bool Preferences::isAddTrackersEnabled() const
+{
+    return value("Preferences/Bittorrent/AddTrackers", false).toBool();
+}
+
+void Preferences::setAddTrackersEnabled(bool enabled)
+{
+    setValue("Preferences/Bittorrent/AddTrackers", enabled);
+}
+
+QString Preferences::getTrackersList() const
+{
+    return value("Preferences/Bittorrent/TrackersList").toString();
+}
+
+void Preferences::setTrackersList(const QString &val)
+{
+    setValue("Preferences/Bittorrent/TrackersList", val);
+}
+
 qreal Preferences::getGlobalMaxRatio() const
 {
     return value("Preferences/Bittorrent/MaxRatio", -1).toDouble();
@@ -1358,37 +1388,26 @@ void Preferences::setShutdownqBTWhenDownloadsComplete(bool shutdown)
 uint Preferences::diskCacheSize() const
 {
     uint size = value("Preferences/Downloads/DiskWriteCacheSize", 0).toUInt();
-
-    // When build as 32bit binary, set the maximum at less than 2GB to prevent crashes.
     // These macros may not be available on compilers other than MSVC and GCC
-#if !defined(_M_X64) && !defined(__amd64__)
-    //1800MiB to leave 248MiB room to the rest of program data in RAM
-    if (size > 1800)
-        size = 1800;
+#if defined(__x86_64__) || defined(_M_X64)
+    size = qMin(size, (uint) 4096);  // 4GiB
 #else
-    // 4GiB
-    if (size > 4 * 1024)
-        size = 4 * 1024;
+    // When build as 32bit binary, set the maximum at less than 2GB to prevent crashes
+    // allocate 1536MiB and leave 512MiB to the rest of program data in RAM
+    size = qMin(size, (uint) 1536);
 #endif
-
     return size;
 }
 
 void Preferences::setDiskCacheSize(uint size)
 {
-    uint size0 = size;
-
-#if !defined(_M_X64) && !defined(__amd64__)
-    //1800MiB to leave 248MiB room to the rest of program data in RAM
-    if (size0 > 1800)
-        size0 = 1800;
+#if defined(__x86_64__) || defined(_M_X64)
+    size = qMin(size, (uint) 4096);  // 4GiB
 #else
-    // 4GiB
-    if (size0 > 4 * 1024)
-        size0 = 4 * 1024;
+    // allocate 1536MiB and leave 512MiB to the rest of program data in RAM
+    size = qMin(size, (uint) 1536);
 #endif
-
-    setValue("Preferences/Downloads/DiskWriteCacheSize", size0);
+    setValue("Preferences/Downloads/DiskWriteCacheSize", size);
 }
 
 uint Preferences::diskCacheTTL() const

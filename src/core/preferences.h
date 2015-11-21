@@ -179,6 +179,8 @@ public:
     QList<bool> getDownloadInScanDirs() const;
     void setDownloadInScanDirs(const QList<bool> &list);
     QString getScanDirsLastPath() const;
+    void setScanDirsDownloadPaths(const QStringList &downloadpaths);
+    QStringList getScanDirsDownloadPaths() const;
     void setScanDirsLastPath(const QString &path);
     bool isTorrentExportEnabled() const;
     QString getTorrentExportDir() const;
@@ -271,6 +273,10 @@ public:
     void setLSDEnabled(bool enabled);
     int getEncryptionSetting() const;
     void setEncryptionSetting(int val);
+    bool isAddTrackersEnabled() const;
+    void setAddTrackersEnabled(bool enabled);
+    QString getTrackersList() const;
+    void setTrackersList(const QString &val);
     qreal getGlobalMaxRatio() const;
     void setGlobalMaxRatio(qreal ratio);
     MaxRatioAction getMaxRatioAction() const;

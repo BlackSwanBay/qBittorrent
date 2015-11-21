@@ -234,17 +234,12 @@ initializeWindows = function() {
 
     deleteFN = function() {
         var h = myTable.selectedIds();
-        /*if(h.length && confirm('QBT_TR(Are you sure you want to delete the selected torrents from the transfer list?)QBT_TR')) {
-            h.each(function(item, index){
-                new Request({url: 'command/delete', method: 'post', data: {hash: item}}).send();
-            });
-        }*/
         if (h.length) {
             new MochaUI.Window({
                 id: 'confirmDeletionPage',
-                title: "QBT_TR(Deletion confirmation - qBittorrent)QBT_TR",
+                title: "QBT_TR(Deletion confirmation)QBT_TR",
                 loadMethod: 'iframe',
-                contentURL: 'confirmdeletion.html?hashes=' + h.join(','),
+                contentURL: 'confirmdeletion.html?hashes=' + h.join("|"),
                 scrollbars: false,
                 resizable: false,
                 maximizable: false,
@@ -306,6 +301,42 @@ initializeWindows = function() {
                 }).send();
             });
             updateMainData();
+        }
+    };
+
+    newLabelFN = function () {
+        var h = myTable.selectedIds();
+        if (h.length) {
+            new MochaUI.Window({
+                id: 'newLabelPage',
+                title: "QBT_TR(New Label)QBT_TR",
+                loadMethod: 'iframe',
+                contentURL: 'newlabel.html?hashes=' + h.join('|'),
+                scrollbars: false,
+                resizable: false,
+                maximizable: false,
+                paddingVertical: 0,
+                paddingHorizontal: 0,
+                width: 250,
+                height: 100
+            });
+        }
+    };
+
+    updateLabelFN = function (labelHash) {
+        var labelName = '';
+        if (labelHash != 0)
+            var labelName = label_list[labelHash].name;
+        var h = myTable.selectedIds();
+        if (h.length) {
+            new Request({
+                url: 'command/setLabel',
+                method: 'post',
+                data: {
+                    hashes: h.join("|"),
+                    label: labelName
+                }
+            }).send();
         }
     };
 

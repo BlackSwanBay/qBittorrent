@@ -1,3 +1,4 @@
+
 /*
  * Bittorrent Client using Qt and libtorrent.
  * Copyright (C) 2015  Vladimir Golovnev <glassez@yandex.ru>
@@ -111,19 +112,6 @@ AddTorrentParams::AddTorrentParams()
 {
 }
 
-// TorrentStatusReport
-
-TorrentStatusReport::TorrentStatusReport()
-    : nbDownloading(0)
-    , nbSeeding(0)
-    , nbCompleted(0)
-    , nbActive(0)
-    , nbInactive(0)
-    , nbPaused(0)
-    , nbResumed(0)
-{
-}
-
 // Session
 
 Session *Session::m_instance = 0;
@@ -146,6 +134,7 @@ Session::Session(QObject *parent)
     , m_highRatioAction(MaxRatioAction::Pause)
 {
     Preferences* const pref = Preferences::instance();
+    Logger* const logger = Logger::instance();
 
     initResumeFolder();
 
@@ -157,26 +146,33 @@ Session::Session(QObject *parent)
 
     // Construct session
     libt::fingerprint fingerprint(PEER_ID, VERSION_MAJOR, VERSION_MINOR, VERSION_BUGFIX, VERSION_BUILD);
-    m_nativeSession = new libt::session(fingerprint, 0);
-    Logger::instance()->addMessage(tr("Peer ID: ") + Utils::String::fromStdString(fingerprint.to_string()));
+    const unsigned short port = pref->getSessionPort();
+    std::pair<int,int> ports(port, port);
+    const QString ip = getListeningIPs().first();
+    // Set severity level of libtorrent session
+    int alertMask = libt::alert::error_notification
+                    | libt::alert::peer_notification
+                    | libt::alert::port_mapping_notification
+                    | libt::alert::storage_notification
+                    | libt::alert::tracker_notification
+                    | libt::alert::status_notification
+                    | libt::alert::ip_block_notification
+                    | libt::alert::progress_notification
+                    | libt::alert::stats_notification
+                    ;
+
+    if (ip.isEmpty()) {
+        logger->addMessage(tr("qBittorrent is trying to listen on any interface port: %1", "e.g: qBittorrent is trying to listen on any interface port: TCP/6881").arg(QString::number(port)), Log::INFO);
+        m_nativeSession = new libt::session(fingerprint, ports, 0, 0, alertMask);
+    }
+    else {
+        logger->addMessage(tr("qBittorrent is trying to listen on interface %1 port: %2", "e.g: qBittorrent is trying to listen on interface 192.168.0.1 port: TCP/6881").arg(ip).arg(port), Log::INFO);
+        m_nativeSession = new libt::session(fingerprint, ports, ip.toLatin1().constData(), 0, alertMask);
+    }
+
+    logger->addMessage(tr("Peer ID: ") + Utils::String::fromStdString(fingerprint.to_string()));
 
     m_nativeSession->set_alert_dispatch(boost::bind(&Session::dispatchAlerts, this, _1));
-
-    // Set severity level of libtorrent session
-    m_nativeSession->set_alert_mask(
-                libt::alert::error_notification
-                | libt::alert::peer_notification
-                | libt::alert::port_mapping_notification
-                | libt::alert::storage_notification
-                | libt::alert::tracker_notification
-                | libt::alert::status_notification
-                | libt::alert::ip_block_notification
-                | libt::alert::progress_notification
-                | libt::alert::stats_notification
-                );
-
-    // Load previous state
-    loadState();
 
     // Enabling plugins
     //m_nativeSession->add_extension(&libt::create_metadata_plugin);
@@ -272,7 +268,6 @@ qreal Session::globalMaxRatio() const
 Session::~Session()
 {
     // Do some BT related saving
-    saveState();
     saveResumeData();
 
     // We must delete FilterParserThread
@@ -308,46 +303,6 @@ void Session::freeInstance()
 Session *Session::instance()
 {
     return m_instance;
-}
-
-void Session::loadState()
-{
-    const QString statePath = Utils::Fs::cacheLocation() + QLatin1String("/ses_state");
-    if (!QFile::exists(statePath)) return;
-
-    if (QFile(statePath).size() == 0) {
-        // Remove empty invalid state file
-        Utils::Fs::forceRemove(statePath);
-        return;
-    }
-
-    QFile file(statePath);
-    if (file.open(QIODevice::ReadOnly)) {
-        QByteArray buf = file.readAll();
-        // bdecode
-        libt::lazy_entry entry;
-        libt::error_code ec;
-        libt::lazy_bdecode(buf.constData(), buf.constData() + buf.size(), entry, ec);
-        if (!ec)
-            m_nativeSession->load_state(entry);
-    }
-}
-
-void Session::saveState()
-{
-    qDebug("Saving session state to disk...");
-
-    const QString state_path = Utils::Fs::cacheLocation() + QLatin1String("/ses_state");
-    libt::entry session_state;
-    m_nativeSession->save_state(session_state);
-    std::vector<char> out;
-    libt::bencode(std::back_inserter(out), session_state);
-
-    QFile session_file(state_path);
-    if (!out.empty() && session_file.open(QIODevice::WriteOnly)) {
-        session_file.write(&out[0], out.size());
-        session_file.close();
-    }
 }
 
 void Session::setSessionSettings()
@@ -619,16 +574,29 @@ void Session::configure()
     qDebug("Applying encryption settings");
     m_nativeSession->set_pe_settings(encryptionSettings);
 
+    // * Add trackers
+    m_additionalTrackers.empty();
+    if (pref->isAddTrackersEnabled()) {
+        foreach (QString tracker, pref->getTrackersList().split("\n")) {
+            tracker = tracker.trimmed();
+            if (!tracker.isEmpty())
+                m_additionalTrackers << tracker;
+        }
+    }
+
     // * Maximum ratio
     m_highRatioAction = pref->getMaxRatioAction();
     setGlobalMaxRatio(pref->getGlobalMaxRatio());
 
     // Ip Filter
-    FilterParserThread::processFilterList(m_nativeSession, pref->bannedIPs());
     if (pref->isFilteringEnabled())
         enableIPFilter(pref->getFilter());
     else
         disableIPFilter();
+    // Add the banned IPs after the possibly disabled IPFilter
+    // which creates an empty filter and overrides all previously
+    // applied bans.
+    FilterParserThread::processFilterList(m_nativeSession, pref->bannedIPs());
 
     // * Proxy settings
     libt::proxy_settings proxySettings;
@@ -743,7 +711,7 @@ void Session::handleDownloadFailed(const QString &url, const QString &reason)
 
 void Session::handleRedirectedToMagnet(const QString &url, const QString &magnetUri)
 {
-    addTorrent_impl(m_downloadedTorrents.take(url), MagnetUri(magnetUri));
+    addTorrent_impl(addDataFromParams(m_downloadedTorrents.take(url)), MagnetUri(magnetUri));
 }
 
 void Session::switchToAlternativeMode(bool alternative)
@@ -755,7 +723,7 @@ void Session::switchToAlternativeMode(bool alternative)
 void Session::handleDownloadFinished(const QString &url, const QString &filePath)
 {
     emit downloadFromUrlFinished(url);
-    addTorrent_impl(m_downloadedTorrents.take(url), MagnetUri(), TorrentInfo::loadFromFile(filePath));
+    addTorrent_impl(addDataFromParams(m_downloadedTorrents.take(url)), MagnetUri(), TorrentInfo::loadFromFile(filePath));
     Utils::Fs::forceRemove(filePath); // remove temporary file
 }
 
@@ -813,11 +781,7 @@ bool Session::deleteTorrent(const QString &hash, bool deleteLocalFiles)
 
     // Remove it from session
     if (deleteLocalFiles) {
-        QDir saveDir(torrent->actualSavePath());
-        if ((saveDir != QDir(m_defaultSavePath)) && (saveDir != QDir(m_tempPath))) {
-            m_savePathsToRemove[torrent->hash()] = saveDir.absolutePath();
-            qDebug() << "Save path to remove (async): " << saveDir.absolutePath();
-        }
+        m_savePathsToRemove[torrent->hash()] = torrent->rootPath(true);
         m_nativeSession->remove_torrent(torrent->nativeHandle(), libt::session::delete_files);
     }
     else {
@@ -968,6 +932,11 @@ QHash<InfoHash, TorrentHandle *> Session::torrents() const
     return m_torrents;
 }
 
+TorrentStatusReport Session::torrentStatusReport() const
+{
+    return m_torrentStatusReport;
+}
+
 // source - .torrent file path/url or magnet uri (hash for preloaded torrent)
 bool Session::addTorrent(QString source, const AddTorrentParams &params)
 {
@@ -988,7 +957,7 @@ bool Session::addTorrent(QString source, const AddTorrentParams &params)
 
         // use common 2nd step of torrent addition
         libt::add_torrent_alert *alert = new libt::add_torrent_alert(handle, libt::add_torrent_params(), libt::error_code());
-        m_addingTorrents.insert(hash, AddTorrentData(params));
+        m_addingTorrents.insert(hash, addDataFromParams(params));
         handleAddTorrentAlert(alert);
         delete alert;
         return true;
@@ -1009,10 +978,10 @@ bool Session::addTorrent(QString source, const AddTorrentParams &params)
         m_downloadedTorrents[handler->url()] = params;
     }
     else if (source.startsWith("magnet:", Qt::CaseInsensitive)) {
-        return addTorrent_impl(params, MagnetUri(source));
+        return addTorrent_impl(addDataFromParams(params), MagnetUri(source));
     }
     else {
-        return addTorrent_impl(params, MagnetUri(), TorrentInfo::loadFromFile(source));
+        return addTorrent_impl(addDataFromParams(params), MagnetUri(), TorrentInfo::loadFromFile(source));
     }
 
     return false;
@@ -1022,11 +991,11 @@ bool Session::addTorrent(const TorrentInfo &torrentInfo, const AddTorrentParams 
 {
     if (!torrentInfo.isValid()) return false;
 
-    return addTorrent_impl(params, MagnetUri(), torrentInfo);
+    return addTorrent_impl(addDataFromParams(params), MagnetUri(), torrentInfo);
 }
 
 // Add a torrent to the BitTorrent session
-bool Session::addTorrent_impl(const AddTorrentData &addData, const MagnetUri &magnetUri,
+bool Session::addTorrent_impl(AddTorrentData addData, const MagnetUri &magnetUri,
                               const TorrentInfo &torrentInfo, const QByteArray &fastresumeData)
 {
     libt::add_torrent_params p;
@@ -1100,19 +1069,10 @@ bool Session::addTorrent_impl(const AddTorrentData &addData, const MagnetUri &ma
 
     QString savePath;
     // Set actual save path (e.g. temporary folder)
-    if (isTempPathEnabled() && !addData.disableTempPath && !addData.hasSeedStatus) {
+    if (isTempPathEnabled() && !addData.disableTempPath && !addData.hasSeedStatus)
         savePath = m_tempPath;
-    }
-    else {
+    else
         savePath = addData.savePath;
-        if (savePath.isEmpty()) {
-            savePath = m_defaultSavePath;
-            if (m_appendLabelToSavePath && !addData.label.isEmpty())
-                savePath +=  QString("%1/").arg(addData.label);
-        }
-        else if (!savePath.endsWith("/"))
-            savePath += "/";
-    }
 
     p.save_path = Utils::String::toStdString(Utils::Fs::toNativePath(savePath));
     // Check if save path exists, creating it otherwise
@@ -1480,6 +1440,56 @@ void Session::networkConfigurationChange(const QNetworkConfiguration& cfg)
     }
 }
 
+const QStringList Session::getListeningIPs()
+{
+    Preferences* const pref = Preferences::instance();
+    Logger* const logger = Logger::instance();
+    QStringList IPs;
+
+    const QString ifaceName = pref->getNetworkInterface();
+    const bool listenIPv6 = pref->getListenIPv6();
+
+    if (ifaceName.isEmpty()) {
+        IPs.append(QString());
+        return IPs;
+    }
+
+    // Attempt to listen on provided interface
+    const QNetworkInterface networkIFace = QNetworkInterface::interfaceFromName(ifaceName);
+    if (!networkIFace.isValid()) {
+        qDebug("Invalid network interface: %s", qPrintable(ifaceName));
+        logger->addMessage(tr("The network interface defined is invalid: %1").arg(ifaceName), Log::CRITICAL);
+        IPs.append("127.0.0.1"); // Force listening to localhost and avoid accidental connection that will expose user data.
+        return IPs;
+    }
+
+    const QList<QNetworkAddressEntry> addresses = networkIFace.addressEntries();
+    qDebug("This network interface has %d IP addresses", addresses.size());
+    QHostAddress ip;
+    QString ipString;
+    QAbstractSocket::NetworkLayerProtocol protocol;
+    foreach (const QNetworkAddressEntry &entry, addresses) {
+        ip = entry.ip();
+        ipString = ip.toString();
+        protocol = ip.protocol();
+        Q_ASSERT(protocol == QAbstractSocket::IPv4Protocol || protocol == QAbstractSocket::IPv6Protocol);
+        if ((!listenIPv6 && (protocol == QAbstractSocket::IPv6Protocol))
+            || (listenIPv6 && (protocol == QAbstractSocket::IPv4Protocol)))
+            continue;
+        IPs.append(ipString);
+    }
+
+    // Make sure there is at least one IP
+    // At this point there was a valid network interface, with no suitable IP.
+    if (IPs.size() == 0) {
+        logger->addMessage(tr("qBittorrent didn't find an %1 local address to listen on", "qBittorrent didn't find an IPv4 local address to listen on").arg(listenIPv6 ? "IPv6" : "IPv4"), Log::CRITICAL);
+        IPs.append("127.0.0.1"); // Force listening to localhost and avoid accidental connection that will expose user data.
+        return IPs;
+    }
+
+    return IPs;
+}
+
 // Set the ports range in which is chosen the port
 // the BitTorrent session will listen to
 void Session::setListeningPort()
@@ -1491,49 +1501,25 @@ void Session::setListeningPort()
 
     std::pair<int,int> ports(port, port);
     libt::error_code ec;
-    const QString iface_name = pref->getNetworkInterface();
-    const bool listen_ipv6 = pref->getListenIPv6();
+    const QStringList IPs = getListeningIPs();
 
-    if (iface_name.isEmpty()) {
-        logger->addMessage(tr("qBittorrent is trying to listen on any interface port: %1", "e.g: qBittorrent is trying to listen on any interface port: TCP/6881").arg(QString::number(port)), Log::INFO);
-        m_nativeSession->listen_on(ports, ec, 0, libt::session::listen_no_system_port);
+    foreach (const QString ip, IPs) {
+        if (ip.isEmpty()) {
+            logger->addMessage(tr("qBittorrent is trying to listen on any interface port: %1", "e.g: qBittorrent is trying to listen on any interface port: TCP/6881").arg(QString::number(port)), Log::INFO);
+            m_nativeSession->listen_on(ports, ec, 0, libt::session::listen_no_system_port);
 
-        if (ec)
-            logger->addMessage(tr("qBittorrent failed to listen on any interface port: %1. Reason: %2", "e.g: qBittorrent failed to listen on any interface port: TCP/6881. Reason: no such interface" ).arg(QString::number(port)).arg(Utils::String::fromStdString(ec.message())), Log::CRITICAL);
+            if (ec)
+                logger->addMessage(tr("qBittorrent failed to listen on any interface port: %1. Reason: %2", "e.g: qBittorrent failed to listen on any interface port: TCP/6881. Reason: no such interface" ).arg(QString::number(port)).arg(Utils::String::fromStdString(ec.message())), Log::CRITICAL);
 
-        return;
-    }
+            return;
+        }
 
-    // Attempt to listen on provided interface
-    const QNetworkInterface network_iface = QNetworkInterface::interfaceFromName(iface_name);
-    if (!network_iface.isValid()) {
-        qDebug("Invalid network interface: %s", qPrintable(iface_name));
-        logger->addMessage(tr("The network interface defined is invalid: %1").arg(iface_name), Log::CRITICAL);
-        return;
-    }
-
-    const QList<QNetworkAddressEntry> addresses = network_iface.addressEntries();
-    qDebug("This network interface has %d IP addresses", addresses.size());
-    QHostAddress ip;
-    QString ipString;
-    QAbstractSocket::NetworkLayerProtocol protocol;
-    foreach (const QNetworkAddressEntry &entry, addresses) {
-        ip = entry.ip();
-        ipString = ip.toString();
-        protocol = ip.protocol();
-        Q_ASSERT(protocol == QAbstractSocket::IPv4Protocol || protocol == QAbstractSocket::IPv6Protocol);
-        if ((!listen_ipv6 && (protocol == QAbstractSocket::IPv6Protocol))
-            || (listen_ipv6 && (protocol == QAbstractSocket::IPv4Protocol)))
-            continue;
-        qDebug("Trying to listen on IP %s (%s)", qPrintable(ipString), qPrintable(iface_name));
-        m_nativeSession->listen_on(ports, ec, ipString.toLatin1().constData(), libt::session::listen_no_system_port);
+        m_nativeSession->listen_on(ports, ec, ip.toLatin1().constData(), libt::session::listen_no_system_port);
         if (!ec) {
-            logger->addMessage(tr("qBittorrent is trying to listen on interface %1 port: %2", "e.g: qBittorrent is trying to listen on interface 192.168.0.1 port: TCP/6881").arg(ipString).arg(port), Log::INFO);
+            logger->addMessage(tr("qBittorrent is trying to listen on interface %1 port: %2", "e.g: qBittorrent is trying to listen on interface 192.168.0.1 port: TCP/6881").arg(ip).arg(port), Log::INFO);
             return;
         }
     }
-
-    logger->addMessage(tr("qBittorrent didn't find an %1 local address to listen on", "qBittorrent didn't find an IPv4 local address to listen on").arg(listen_ipv6 ? "IPv6" : "IPv4"), Log::CRITICAL);
 }
 
 // Set download rate limit
@@ -1722,7 +1708,7 @@ void Session::handleTorrentFinished(TorrentHandle *const torrent)
         const QString torrentRelpath = torrent->filePath(i);
         if (torrentRelpath.endsWith(".torrent", Qt::CaseInsensitive)) {
             qDebug("Found possible recursive torrent download.");
-            const QString torrentFullpath = torrent->actualSavePath() + "/" + torrentRelpath;
+            const QString torrentFullpath = torrent->savePath(true) + "/" + torrentRelpath;
             qDebug("Full subtorrent path is %s", qPrintable(torrentFullpath));
             TorrentInfo torrentInfo = TorrentInfo::loadFromFile(torrentFullpath);
             if (torrentInfo.isValid()) {
@@ -2049,7 +2035,6 @@ void Session::handleAlert(libt::alert *a)
             handleMetadataReceivedAlert(static_cast<libt::metadata_received_alert*>(a));
             dispatchTorrentAlert(a);
             break;
-
         case libt::state_update_alert::alert_type:
             handleStateUpdateAlert(static_cast<libt::state_update_alert*>(a));
             break;
@@ -2064,6 +2049,9 @@ void Session::handleAlert(libt::alert *a)
             break;
         case libt::torrent_deleted_alert::alert_type:
             handleTorrentDeletedAlert(static_cast<libt::torrent_deleted_alert*>(a));
+            break;
+        case libt::torrent_delete_failed_alert::alert_type:
+            handleTorrentDeleteFailedAlert(static_cast<libt::torrent_delete_failed_alert*>(a));
             break;
         case libt::portmap_error_alert::alert_type:
             handlePortmapWarningAlert(static_cast<libt::portmap_error_alert*>(a));
@@ -2151,6 +2139,9 @@ void Session::handleAddTorrentAlert(libtorrent::add_torrent_alert *p)
             }
         }
 
+        if (pref->isAddTrackersEnabled() && !torrent->isPrivate())
+            torrent->addTrackers(m_additionalTrackers);
+
         bool addPaused = data.addPaused;
         if (data.addPaused == TriStateBool::Undefined)
             addPaused = pref->addTorrentsInPause();
@@ -2178,13 +2169,16 @@ void Session::handleTorrentRemovedAlert(libtorrent::torrent_removed_alert *p)
 
 void Session::handleTorrentDeletedAlert(libt::torrent_deleted_alert *p)
 {
+    m_savePathsToRemove.remove(p->info_hash);
+}
+
+void Session::handleTorrentDeleteFailedAlert(libt::torrent_delete_failed_alert *p)
+{
+    // libtorrent won't delete the directory if it contains files not listed in the torrent,
+    // so we remove the directory ourselves
     if (m_savePathsToRemove.contains(p->info_hash)) {
-        qDebug("A torrent was deleted from the hard disk, attempting to remove the root folder too...");
-        const QString dirpath = m_savePathsToRemove.take(p->info_hash);
-        qDebug() << "Removing save path: " << dirpath << "...";
-        bool ok = Utils::Fs::smartRemoveEmptyFolderTree(dirpath);
-        Q_UNUSED(ok);
-        qDebug() << "Folder was removed: " << ok;
+        QString path = m_savePathsToRemove.take(p->info_hash);
+        Utils::Fs::smartRemoveEmptyFolderTree(path);
     }
 }
 
@@ -2320,31 +2314,31 @@ void Session::handleStateUpdateAlert(libt::state_update_alert *p)
 {
     foreach (const libt::torrent_status &status, p->status) {
         TorrentHandle *const torrent = m_torrents.value(status.info_hash);
-        if (torrent) {
+        if (torrent)
             torrent->handleStateUpdate(status);
-            emit torrentStatusUpdated(torrent);
-        }
     }
 
-    TorrentStatusReport torrentStatusReport;
+    m_torrentStatusReport = TorrentStatusReport();
     foreach (TorrentHandle *const torrent, m_torrents) {
         if (torrent->isDownloading())
-            ++torrentStatusReport.nbDownloading;
+            ++m_torrentStatusReport.nbDownloading;
         if (torrent->isUploading())
-            ++torrentStatusReport.nbSeeding;
+            ++m_torrentStatusReport.nbSeeding;
         if (torrent->isCompleted())
-            ++torrentStatusReport.nbCompleted;
+            ++m_torrentStatusReport.nbCompleted;
         if (torrent->isPaused())
-            ++torrentStatusReport.nbPaused;
+            ++m_torrentStatusReport.nbPaused;
         if (torrent->isResumed())
-            ++torrentStatusReport.nbResumed;
+            ++m_torrentStatusReport.nbResumed;
         if (torrent->isActive())
-            ++torrentStatusReport.nbActive;
+            ++m_torrentStatusReport.nbActive;
         if (torrent->isInactive())
-            ++torrentStatusReport.nbInactive;
+            ++m_torrentStatusReport.nbInactive;
+        if (torrent->isErrored())
+            ++m_torrentStatusReport.nbErrored;
     }
 
-    emit torrentsUpdated(torrentStatusReport);
+    emit torrentsUpdated();
 }
 
 bool readFile(const QString &path, QByteArray &buf)
@@ -2444,4 +2438,34 @@ void torrentQueuePositionBottom(const libt::torrent_handle &handle)
     catch (std::exception &exc) {
         qDebug() << Q_FUNC_INFO << " fails: " << exc.what();
     }
+}
+
+AddTorrentData Session::addDataFromParams(const AddTorrentParams &params)
+{
+    AddTorrentData data;
+
+    data.resumed = false;
+    data.name = params.name;
+    data.label = params.label;
+    data.savePath = params.savePath;
+    data.disableTempPath = params.disableTempPath;
+    data.sequential = params.sequential;
+    data.hasSeedStatus = params.skipChecking; // do not react on 'torrent_finished_alert' when skipping
+    data.skipChecking = params.skipChecking;
+    data.addForced = params.addForced;
+    data.addPaused = params.addPaused;
+    data.filePriorities = params.filePriorities;
+    data.ratioLimit = params.ignoreShareRatio ? TorrentHandle::NO_RATIO_LIMIT : TorrentHandle::USE_GLOBAL_RATIO;
+
+    // normalize save path
+    if (data.savePath.isEmpty()) {
+        data.savePath = m_defaultSavePath;
+        if (m_appendLabelToSavePath && !data.label.isEmpty())
+            data.savePath +=  QString("%1/").arg(data.label);
+    }
+    else if (!data.savePath.endsWith("/")) {
+        data.savePath += "/";
+    }
+
+    return data;
 }

@@ -256,6 +256,7 @@ private:
  *   - "seq_dl": Torrent sequential download state
  *   - "f_l_piece_prio": Torrent first last piece priority state
  *   - "force_start": Torrent force start state
+ *   - "label": Torrent label
  */
 QByteArray btjson::getTorrents(QString filter, QString label,
                                QString sortedColumn, bool reverse, int limit, int offset)
@@ -510,7 +511,7 @@ QByteArray btjson::getPropertiesForTorrent(const QString& hash)
         dataDict[KEY_PROP_COMPLETION_DATE] = -1;
         dataDict[KEY_PROP_CREATION_DATE] = -1;
     }
-    dataDict[KEY_PROP_SAVE_PATH] = Utils::Fs::toNativePath(torrent->rootPath());
+    dataDict[KEY_PROP_SAVE_PATH] = Utils::Fs::toNativePath(torrent->savePath());
     dataDict[KEY_PROP_COMMENT] = torrent->comment();
 
     return json::toJson(dataDict);
@@ -636,7 +637,7 @@ QVariantMap toMap(BitTorrent::TorrentHandle *const torrent)
     ret[KEY_TORRENT_LABEL] = torrent->label();
     ret[KEY_TORRENT_SUPER_SEEDING] = torrent->superSeeding();
     ret[KEY_TORRENT_FORCE_START] = torrent->isForced();
-    ret[KEY_TORRENT_SAVE_PATH] = Utils::Fs::toNativePath(torrent->rootPath());
+    ret[KEY_TORRENT_SAVE_PATH] = Utils::Fs::toNativePath(torrent->savePath());
 
     return ret;
 }

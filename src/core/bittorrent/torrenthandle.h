@@ -97,9 +97,6 @@ namespace BitTorrent
         QVector<int> filePriorities;
         // for resumed torrents
         qreal ratioLimit;
-
-        AddTorrentData();
-        AddTorrentData(const AddTorrentParams &in);
     };
 
     struct TrackerInfo
@@ -139,6 +136,7 @@ namespace BitTorrent
             PausedDownloading,
             PausedUploading,
 
+            MissingFiles,
             Error
         };
 
@@ -179,9 +177,50 @@ namespace BitTorrent
         qlonglong pieceLength() const;
         qlonglong wastedSize() const;
         QString currentTracker() const;
-        QString actualSavePath() const;
-        QString savePath() const;
-        QString rootPath() const;
+
+        // 1. savePath() - the path where all the files and subfolders of torrent are stored (as always).
+        // 2. rootPath() - absolute path of torrent file tree (save path + first item from 1st torrent file path).
+        // 3. contentPath() - absolute path of torrent content (root path for multifile torrents, absolute file path for singlefile torrents).
+        //
+        // These methods have 'actual' parameter (defaults to false) which allow to get actual or final path variant.
+        //
+        // Examples.
+        // Suppose we have three torrent with following structures and save path `/home/user/torrents`:
+        //
+        // Torrent A (multifile)
+        //
+        // torrentA/
+        //    subdir1/
+        //       subdir2/
+        //          file1
+        //          file2
+        //       file3
+        //    file4
+        //
+        //
+        // Torrent B (singlefile)
+        //
+        // torrentB/
+        //    subdir1/
+        //           file1
+        //
+        //
+        // Torrent C (singlefile)
+        //
+        // file1
+        //
+        //
+        // Results:
+        // |   |           rootPath           |                contentPath                 |
+        // |---|------------------------------|--------------------------------------------|
+        // | A | /home/user/torrents/torrentA | /home/user/torrents/torrentA               |
+        // | B | /home/user/torrents/torrentB | /home/user/torrents/torrentB/subdir1/file1 |
+        // | C | /home/user/torrents/file1    | /home/user/torrents/file1                  |
+
+        QString savePath(bool actual = false) const;
+        QString rootPath(bool actual = false) const;
+        QString contentPath(bool actual = false) const;
+
         int filesCount() const;
         int piecesCount() const;
         int piecesHave() const;
@@ -210,6 +249,7 @@ namespace BitTorrent
         bool isCompleted() const;
         bool isActive() const;
         bool isInactive() const;
+        bool isErrored() const;
         bool isSequentialDownload() const;
         bool hasFirstLastPiecePriority() const;
         TorrentState state() const;
